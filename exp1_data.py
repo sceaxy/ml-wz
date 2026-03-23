@@ -75,27 +75,26 @@ def _metrics(y_true, y_pred, t_train: float) -> dict:
 def _add_window_features(df: pd.DataFrame, id_col: str, ts_col: str,
                          data_cols: list, window: int = 10) -> pd.DataFrame:
     """
-    添加滑动窗口统计特征（对标原论文关键特征工程）:
-      - ID 频率：过去 window 条消息中相同 CAN ID 出现次数
-      - 时间间隔统计：过去 window 条消息的平均/标准差间隔
-      - 数据字节均值：过去 window 条消息 DATA 字节的均值
+    添加窗口统计特征（向量化实现，速度快）:
+      - ts_diff   : 相邻消息时间间隔
+      - ts_mean   : 过去 window 条时间间隔均值
+      - ts_std    : 过去 window 条时间间隔标准差
+      - data_mean : 当前帧 8 字节均值
+      - data_std  : 当前帧 8 字节标准差
     """
-    # 时间戳差分
-    df["ts_diff"] = pd.to_numeric(df[ts_col], errors="coerce").diff().fillna(0).clip(0, 0.1)
+    # 时间戳差分（向量化）
+    ts = pd.to_numeric(df[ts_col], errors="coerce")
+    df["ts_diff"] = ts.diff().fillna(0).clip(0, 0.1)
 
-    # 滑动窗口：相同 ID 在过去 window 条中的频率
-    df["id_freq"] = (df[id_col]
-                     .rolling(window, min_periods=1)
-                     .apply(lambda x: (x == x.iloc[-1]).sum(), raw=False))
+    # 滑动窗口均值和标准差（pandas 原生，C 层实现，极快）
+    rolling = df["ts_diff"].rolling(window, min_periods=1)
+    df["ts_mean"] = rolling.mean()
+    df["ts_std"]  = rolling.std().fillna(0)
 
-    # 滑动窗口：时间间隔均值和标准差
-    rolling_ts = df["ts_diff"].rolling(window, min_periods=1)
-    df["ts_mean"] = rolling_ts.mean()
-    df["ts_std"]  = rolling_ts.std().fillna(0)
-
-    # 滑动窗口：DATA 字节均值（所有字节的平均值）
-    df["data_mean"] = df[data_cols].mean(axis=1)
-    df["data_std"]  = df[data_cols].std(axis=1).fillna(0)
+    # 当前帧字节统计（行方向，numpy 向量化）
+    byte_arr = df[data_cols].values.astype(float)
+    df["data_mean"] = byte_arr.mean(axis=1)
+    df["data_std"]  = byte_arr.std(axis=1)
 
     return df
 
@@ -147,11 +146,10 @@ def preprocess_can(logger, data_dir: Path):
     logger.info("  adding window features (id_freq, ts_mean, ts_std, data_mean, data_std) …")
     df = _add_window_features(df, "ID_dec", ts_col, data_cols, window=10)
 
-    feat_cols = (["ID_dec"] +
-                 ([dlc_col] if dlc_col else []) +
-                 ["ts_diff", "id_freq", "ts_mean", "ts_std",
-                  "data_mean", "data_std"] +
-                 data_cols)
+    feat_cols = (([dlc_col] if dlc_col else []) +
+                    ["ts_diff", "ts_mean", "ts_std",
+                    "data_mean", "data_std"] +
+                    data_cols)
     X = df[feat_cols].fillna(0).values.astype(np.float32)
     le = LabelEncoder()
     y  = le.fit_transform(df[label_col].astype(str).str.strip())
