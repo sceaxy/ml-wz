@@ -12,6 +12,7 @@ EXP2: 混合数据增强 — SMOTE-Tomek Links
        /workspaces/cache/results/exp2_rare_recall.json
 """
 import gc
+import os
 import json
 import pickle
 import time
@@ -25,7 +26,7 @@ from sklearn.metrics import classification_report, f1_score
 
 warnings.filterwarnings("ignore")
 
-CACHE   = Path("/workspaces/cache")
+CACHE   = Path(os.environ.get("CACHE_DIR", "/root/cache"))
 DATA    = CACHE / "data"
 
 
